@@ -2,24 +2,16 @@ import express from 'express';
 import multer from 'multer';
 import { query } from '../config/database.js';
 import { authenticate } from '../middleware/auth.js';
+import cloudinary from '../config/cloudinary.js';
+import streamifier from 'streamifier';
 
 const router = express.Router();
 
-// Configuration multer
+// Configuration multer - accepte tous les fichiers
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB
-  },
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|webp|pdf|doc|docx|xls|xlsx/;
-    const mimetype = allowedTypes.test(file.mimetype);
-
-    if (mimetype) {
-      cb(null, true);
-    } else {
-      cb(new Error('Type de fichier non autorisé'));
-    }
   }
 });
 
@@ -31,38 +23,31 @@ router.get('/', authenticate, async (req, res) => {
     const result = await query(
       `SELECT m.*, u.username as uploader_name
        FROM media m
-       LEFT JOIN users u ON m.uploader_id = u.id
+       LEFT JOIN users u ON m.uploader_id = u.id::text
        ORDER BY m.created_at DESC
        LIMIT $1 OFFSET $2`,
       [parseInt(limit), parseInt(offset)]
     );
 
-    const countResult = await query('SELECT COUNT(*) FROM media');
-    const total = parseInt(countResult.rows[0].count);
-
     res.json({
       success: true,
       media: result.rows,
-      pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
-        total,
-        hasMore: (parseInt(offset) + result.rows.length) < total
-      }
+      total: result.rows.length
     });
   } catch (error) {
     console.error('Error fetching media:', error);
     res.status(500).json({ 
       success: false,
-      error: 'Failed to fetch media' 
+      error: 'Failed to fetch media',
+      details: error.message
     });
   }
 });
 
-// POST upload un fichier (version corrigée)
+// POST upload avec Cloudinary
 router.post('/upload', authenticate, upload.single('file'), async (req, res) => {
   try {
-    console.log('📤 Upload request received');
+    console.log('📤 Upload vers Cloudinary...');
     
     if (!req.file) {
       return res.status(400).json({ 
@@ -71,36 +56,88 @@ router.post('/upload', authenticate, upload.single('file'), async (req, res) => 
       });
     }
 
-    console.log('📄 File:', {
+    console.log('📄 File info:', {
       name: req.file.originalname,
       type: req.file.mimetype,
-      size: req.file.size,
-      userId: req.user.id
+      size: req.file.size
     });
 
-    const { entity_type, entity_id } = req.body;
-    
-    // Pour l'instant, stockage simple (comme media-simple.js)
-    const result = await query(
+    // Vérifie si Cloudinary est configuré
+    if (!process.env.CLOUDINARY_CLOUD_NAME) {
+      console.warn('⚠️ Cloudinary non configuré, stockage local simulé');
+      
+      // Stockage simulé (pour tests)
+      const dbResult = await query(
+        `INSERT INTO media 
+         (filename, original_name, url, mime_type, size, uploader_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         RETURNING *`,
+        [
+          `local-${Date.now()}-${req.file.originalname}`,
+          req.file.originalname,
+          `/uploads/${req.file.originalname}`,
+          req.file.mimetype,
+          req.file.size,
+          String(req.user.id)
+        ]
+      );
+
+      return res.status(201).json({
+        success: true,
+        message: 'Fichier enregistré (Cloudinary non configuré)',
+        media: dbResult.rows[0],
+        warning: 'Configure Cloudinary pour un stockage permanent'
+      });
+    }
+
+    // Upload vers Cloudinary (configuration réelle)
+    const cloudinaryResult = await new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          resource_type: 'auto',
+          folder: 'agadev',
+          use_filename: true,
+          unique_filename: true
+        },
+        (error, result) => {
+          if (error) {
+            console.error('❌ Cloudinary error:', error);
+            reject(error);
+          } else {
+            console.log('✅ Cloudinary success:', result.secure_url);
+            resolve(result);
+          }
+        }
+      );
+      
+      streamifier.createReadStream(req.file.buffer).pipe(uploadStream);
+    });
+
+    // Sauvegarde en base de données
+    const dbResult = await query(
       `INSERT INTO media 
-       (filename, original_name, url, mime_type, size, uploader_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
+       (filename, original_name, url, mime_type, size, uploader_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
        RETURNING *`,
       [
-        `media-${Date.now()}-${req.file.originalname}`,
+        cloudinaryResult.public_id,
         req.file.originalname,
-        '#', // URL placeholder
+        cloudinaryResult.secure_url,
         req.file.mimetype,
         req.file.size,
-        req.user.id  // UUID directement
+        String(req.user.id)
       ]
     );
 
     res.status(201).json({
       success: true,
-      message: 'Fichier uploadé avec succès',
-      media: result.rows[0],
-      note: 'Le fichier est stocké localement'
+      message: 'Fichier uploadé avec succès sur Cloudinary',
+      media: dbResult.rows[0],
+      cloudinary: {
+        url: cloudinaryResult.secure_url,
+        public_id: cloudinaryResult.public_id,
+        format: cloudinaryResult.format
+      }
     });
 
   } catch (error) {
@@ -118,17 +155,33 @@ router.delete('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     
-    const result = await query(
-      'DELETE FROM media WHERE id = $1 RETURNING id',
+    // Récupère le média
+    const media = await query(
+      'SELECT filename, url FROM media WHERE id = $1',
       [id]
     );
     
-    if (result.rows.length === 0) {
+    if (media.rows.length === 0) {
       return res.status(404).json({ 
         success: false,
         error: 'Fichier non trouvé' 
       });
     }
+    
+    const { filename, url } = media.rows[0];
+    
+    // Supprime de Cloudinary si c'est un fichier Cloudinary
+    if (url.includes('cloudinary.com') && process.env.CLOUDINARY_CLOUD_NAME) {
+      try {
+        await cloudinary.uploader.destroy(filename);
+        console.log('✅ Supprimé de Cloudinary:', filename);
+      } catch (cloudinaryError) {
+        console.warn('⚠️ Impossible de supprimer de Cloudinary:', cloudinaryError.message);
+      }
+    }
+    
+    // Supprime de la base de données
+    await query('DELETE FROM media WHERE id = $1', [id]);
     
     res.json({
       success: true,
