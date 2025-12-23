@@ -1,12 +1,12 @@
 // routes/admin.js
 import express from 'express';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticate } from '../middleware/auth.js';
 import { query } from '../config/database.js';
 
 const router = express.Router();
 
 // ===== ROUTE PROFIL ADMIN =====
-router.get('/profile', authenticateToken, async (req, res) => {
+router.get('/profile', authenticate, async (req, res) => {
   try {
     console.log('📡 Requête profil admin reçue pour user ID:', req.user.id);
     
@@ -46,7 +46,7 @@ router.get('/profile', authenticateToken, async (req, res) => {
 });
 
 // ===== ROUTE TABLEAU DE BORD (exemple) =====
-router.get('/dashboard', authenticateToken, async (req, res) => {
+router.get('/dashboard', authenticate, async (req, res) => {
   try {
     res.json({
       message: 'Tableau de bord admin',
