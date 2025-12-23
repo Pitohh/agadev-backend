@@ -5,24 +5,24 @@ import { authenticate } from '../middleware/auth.js';
 
 const router = express.Router();
 
-// Configuration multer la plus simple possible
 const upload = multer({
-  storage: multer.memoryStorage(), // Stockage mémoire seulement
-  limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-  }
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }
 });
 
-// Route test - vérifie que le routeur fonctionne
 router.get('/test', authenticate, (req, res) => {
   res.json({
     success: true,
     message: 'Media router is working',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    user: {
+      id: req.user.id,
+      username: req.user.username
+    }
   });
 });
 
-// Upload simplifié - sans Cloudinary pour commencer
+// Upload simplifié - UTILISE LE VRAI UUID
 router.post('/upload-simple', authenticate, upload.single('file'), async (req, res) => {
   try {
     console.log('📤 Upload simple request');
@@ -34,13 +34,13 @@ router.post('/upload-simple', authenticate, upload.single('file'), async (req, r
       });
     }
 
-    console.log('File received:', {
-      name: req.file.originalname,
-      type: req.file.mimetype,
-      size: req.file.size
+    console.log('👤 User ID:', {
+      value: req.user.id,
+      type: typeof req.user.id,
+      length: req.user.id?.length
     });
 
-    // Pour l'instant, on stocke juste les métadonnées
+    // Utilise le VRAI user.id (UUID)
     const result = await query(
       `INSERT INTO media 
        (filename, original_name, url, mime_type, size, uploader_id)
@@ -52,7 +52,7 @@ router.post('/upload-simple', authenticate, upload.single('file'), async (req, r
         '#placeholder',
         req.file.mimetype,
         req.file.size,
-        req.user.id
+        req.user.id  // UUID directement
       ]
     );
 
@@ -60,7 +60,7 @@ router.post('/upload-simple', authenticate, upload.single('file'), async (req, r
       success: true,
       message: 'File metadata saved successfully',
       file: result.rows[0],
-      note: 'File stored in memory only'
+      user_id_used: req.user.id
     });
 
   } catch (error) {
@@ -68,12 +68,13 @@ router.post('/upload-simple', authenticate, upload.single('file'), async (req, r
     res.status(500).json({
       success: false,
       error: 'Upload failed',
-      details: error.message
+      details: error.message,
+      user_id: req.user?.id,
+      query: 'INSERT INTO media (..., uploader_id) VALUES (..., $6)'
     });
   }
 });
 
-// Liste des fichiers
 router.get('/list', authenticate, async (req, res) => {
   try {
     const result = await query(
