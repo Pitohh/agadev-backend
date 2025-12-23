@@ -10,6 +10,7 @@ import newsRoutes from './routes/news.js';
 import projectsRoutes from './routes/projects.js';
 import authRoutes from './routes/auth.js';
 import adminRoutes from './routes/admin.js';
+import mediaSimpleRoutes from './routes/media-simple.js';
 import mediaRoutes from './routes/media.js';
 
 dotenv.config();
@@ -84,6 +85,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/news', newsRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/media', mediaRoutes);
+app.use('/api/media-simple', mediaSimpleRoutes);
 
 // 404 handler
 app.use((req, res) => {
