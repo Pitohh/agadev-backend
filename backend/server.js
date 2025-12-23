@@ -85,6 +85,7 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/news', newsRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/media', mediaRoutes);
+app.use('/api/fix', require('./routes/fix-projects.js'));
 app.use('/api/media-simple', mediaSimpleRoutes);
 
 // 404 handler
