@@ -1,0 +1,339 @@
+import express from 'express';
+import multer from 'multer';
+import { query } from '../config/database.js';
+import { authenticate } from '../middleware/auth.js';
+import streamifier from 'streamifier';
+
+const router = express.Router();
+
+// ✅ Utilise memoryStorage pour Railway (pas de disque)
+const storage = multer.memoryStorage();
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB max
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /jpeg|jpg|png|gif|webp|pdf|doc|docx|xls|xlsx|ppt|pptx/;
+    const mimetype = allowedTypes.test(file.mimetype);
+
+    if (mimetype) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Type de fichier non autorisé. Types autorisés: images, PDF, documents Office'));
+    }
+  }
+});
+
+// Import cloudinary (nous allons vérifier s'il est configuré)
+let cloudinary;
+try {
+  cloudinary = (await import('../config/cloudinary.js')).default;
+  console.log('☁️ Cloudinary configuré');
+} catch (error) {
+  console.log('⚠️ Cloudinary non disponible:', error.message);
+}
+
+/**
+ * Upload buffer vers Cloudinary
+ */
+const uploadBufferToCloudinary = (buffer, originalname, folder = 'agadev') => {
+  return new Promise((resolve, reject) => {
+    if (!cloudinary) {
+      return reject(new Error('Cloudinary non configuré'));
+    }
+
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder: folder,
+        resource_type: 'auto',
+        quality: 'auto',
+        fetch_format: 'auto'
+      },
+      (error, result) => {
+        if (error) {
+          reject(error);
+        } else {
+          resolve(result);
+        }
+      }
+    );
+
+    streamifier.createReadStream(buffer).pipe(uploadStream);
+  });
+};
+
+/**
+ * POST /api/media/upload - Upload un fichier
+ */
+router.post('/upload', authenticate, upload.single('file'), async (req, res) => {
+  try {
+    console.log('📤 Début de l\'upload...');
+    
+    if (!req.file) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Aucun fichier sélectionné' 
+      });
+    }
+
+    console.log('📄 Fichier reçu:', {
+      nom: req.file.originalname,
+      type: req.file.mimetype,
+      taille: req.file.size,
+      buffer: req.file.buffer ? 'oui' : 'non'
+    });
+
+    const { entity_type, entity_id } = req.body;
+    let cloudinaryResult = null;
+    let fileUrl = '#';
+    let publicId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+    // Essayer Cloudinary si configuré
+    if (cloudinary && 
+        process.env.CLOUDINARY_CLOUD_NAME && 
+        process.env.CLOUDINARY_API_KEY && 
+        process.env.CLOUDINARY_API_SECRET) {
+      
+      try {
+        console.log('☁️ Tentative d\'upload vers Cloudinary...');
+        cloudinaryResult = await uploadBufferToCloudinary(
+          req.file.buffer,
+          req.file.originalname,
+          `agadev/${entity_type || 'general'}`
+        );
+        
+        fileUrl = cloudinaryResult.secure_url;
+        publicId = cloudinaryResult.public_id;
+        
+        console.log('✅ Succès Cloudinary:', {
+          url: fileUrl,
+          public_id: publicId
+        });
+        
+      } catch (cloudinaryError) {
+        console.error('❌ Erreur Cloudinary:', cloudinaryError.message);
+        // On continue sans Cloudinary
+      }
+    } else {
+      console.log('⚠️ Cloudinary non configuré, stockage local uniquement');
+    }
+
+    // Enregistrer dans la base de données (structure actuelle de la table)
+    const result = await query(
+      `INSERT INTO media 
+       (filename, original_name, url, mime_type, size, uploader_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING *`,
+      [
+        publicId,
+        req.file.originalname,
+        fileUrl,
+        req.file.mimetype,
+        req.file.size,
+        req.user.id
+      ]
+    );
+
+    const response = {
+      success: true,
+      message: cloudinaryResult ? 'Fichier uploadé avec succès' : 'Métadonnées enregistrées (stockage local)',
+      media: result.rows[0]
+    };
+
+    if (cloudinaryResult) {
+      response.cloudinary_info = {
+        public_id: cloudinaryResult.public_id,
+        format: cloudinaryResult.format,
+        url: cloudinaryResult.secure_url
+      };
+    } else {
+      response.warning = 'Le fichier est stocké localement seulement';
+    }
+
+    res.status(201).json(response);
+
+  } catch (error) {
+    console.error('❌ Erreur lors de l\'upload:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Échec de l\'upload du fichier',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/media/upload-multiple - Upload multiple
+ */
+router.post('/upload-multiple', authenticate, upload.array('files', 5), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Aucun fichier sélectionné' 
+      });
+    }
+
+    console.log(`📤 Upload de ${req.files.length} fichier(s)...`);
+    const uploadedFiles = [];
+    const errors = [];
+
+    for (const [index, file] of req.files.entries()) {
+      try {
+        console.log(`  ${index + 1}/${req.files.length}: ${file.originalname}`);
+        
+        let fileUrl = '#';
+        let publicId = `local-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Essayer Cloudinary
+        if (cloudinary) {
+          try {
+            const cloudinaryResult = await uploadBufferToCloudinary(
+              file.buffer,
+              file.originalname,
+              'agadev/general'
+            );
+            fileUrl = cloudinaryResult.secure_url;
+            publicId = cloudinaryResult.public_id;
+          } catch (cloudinaryError) {
+            console.error(`  ⚠️ Cloudinary échoué pour ${file.originalname}:`, cloudinaryError.message);
+          }
+        }
+
+        // Enregistrer dans la DB
+        const result = await query(
+          `INSERT INTO media 
+           (filename, original_name, url, mime_type, size, uploader_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING *`,
+          [
+            publicId,
+            file.originalname,
+            fileUrl,
+            file.mimetype,
+            file.size,
+            req.user.id
+          ]
+        );
+
+        uploadedFiles.push(result.rows[0]);
+
+      } catch (error) {
+        console.error(`  ❌ Erreur pour ${file.originalname}:`, error.message);
+        errors.push({
+          file: file.originalname,
+          error: error.message
+        });
+      }
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `${uploadedFiles.length} fichier(s) traité(s)`,
+      media: uploadedFiles,
+      errors: errors.length > 0 ? errors : undefined,
+      warning: !cloudinary ? 'Cloudinary non configuré - stockage local seulement' : undefined
+    });
+
+  } catch (error) {
+    console.error('❌ Erreur upload multiple:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Échec de l\'upload multiple',
+      details: error.message
+    });
+  }
+});
+
+/**
+ * GET /api/media - Lister les fichiers
+ */
+router.get('/', authenticate, async (req, res) => {
+  try {
+    const { limit = 20, offset = 0 } = req.query;
+
+    const result = await query(
+      `SELECT m.*, u.username as uploader_name
+       FROM media m
+       LEFT JOIN users u ON m.uploader_id = u.id
+       ORDER BY m.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [parseInt(limit), parseInt(offset)]
+    );
+
+    const countResult = await query('SELECT COUNT(*) FROM media');
+    const total = parseInt(countResult.rows[0].count);
+
+    res.json({
+      success: true,
+      media: result.rows,
+      pagination: {
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        total,
+        hasMore: (parseInt(offset) + result.rows.length) < total
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erreur récupération médias:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Échec de la récupération des fichiers' 
+    });
+  }
+});
+
+/**
+ * DELETE /api/media/:id - Supprimer un fichier
+ */
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Récupérer les infos du fichier
+    const mediaResult = await query(
+      'SELECT * FROM media WHERE id = $1',
+      [id]
+    );
+
+    if (mediaResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Fichier non trouvé' 
+      });
+    }
+
+    const media = mediaResult.rows[0];
+
+    // Supprimer de Cloudinary si c'est un fichier Cloudinary
+    if (media.filename && !media.filename.startsWith('local-') && cloudinary) {
+      try {
+        const resourceType = media.mime_type.startsWith('image/') ? 'image' : 'raw';
+        await cloudinary.uploader.destroy(media.filename, {
+          resource_type: resourceType
+        });
+        console.log(`✅ Supprimé de Cloudinary: ${media.filename}`);
+      } catch (error) {
+        console.error('⚠️ Échec suppression Cloudinary:', error.message);
+      }
+    }
+
+    // Supprimer de la base de données
+    await query('DELETE FROM media WHERE id = $1', [id]);
+
+    res.json({
+      success: true,
+      message: 'Fichier supprimé avec succès'
+    });
+  } catch (error) {
+    console.error('❌ Erreur suppression:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Échec de la suppression' 
+    });
+  }
+});
+
+export default router;
