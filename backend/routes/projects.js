@@ -11,30 +11,30 @@ router.get('/', async (req, res) => {
   try {
     const { page = 1, limit = 10, status, lang = 'fr' } = req.query;
     const offset = (page - 1) * limit;
-    
+
     const titleField = lang === 'en' ? 'title_en' : 'title_fr';
     const descriptionField = lang === 'en' ? 'description_en' : 'description_fr';
     const contentField = lang === 'en' ? 'content_en' : 'content_fr';
-    
+
     let queryText = `
-      SELECT id, 
+      SELECT id,
              ${titleField} as title, ${descriptionField} as description, ${contentField} as content,
-             slug, cover_image_url, status, start_date, end_date, location, partners, created_at
-      FROM projects 
+             slug, cover_image_url, presentation_file_url, status, start_date, end_date, location, partners, created_at
+      FROM projects
       WHERE published = true
     `;
     const params = [];
-    
+
     if (status) {
       queryText += ` AND status = $${params.length + 1}`;
       params.push(status);
     }
-    
+
     queryText += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(limit, offset);
-    
+
     const result = await query(queryText, params);
-    
+
     const countResult = await query('SELECT COUNT(*) FROM projects WHERE published = true');
     const total = parseInt(countResult.rows[0].count);
 
@@ -58,16 +58,16 @@ router.get('/:slug', async (req, res) => {
   try {
     const { slug } = req.params;
     const { lang = 'fr' } = req.query;
-    
+
     const titleField = lang === 'en' ? 'title_en' : 'title_fr';
     const descriptionField = lang === 'en' ? 'description_en' : 'description_fr';
     const contentField = lang === 'en' ? 'content_en' : 'content_fr';
-    
+
     const result = await query(
-      `SELECT id, 
+      `SELECT id,
               ${titleField} as title, ${descriptionField} as description, ${contentField} as content,
-              slug, cover_image_url, status, start_date, end_date, location, partners, created_at
-       FROM projects 
+              slug, cover_image_url, presentation_file_url, status, start_date, end_date, location, partners, created_at
+       FROM projects
        WHERE slug = $1 AND published = true`,
       [slug]
     );
@@ -88,12 +88,12 @@ router.get('/admin/all', authenticate, async (req, res) => {
   try {
     const { page = 1, limit = 20 } = req.query;
     const offset = (page - 1) * limit;
-    
+
     const result = await query(
-      `SELECT id, title_fr, title_en, description_fr, slug, cover_image_url, 
+      `SELECT id, title_fr, title_en, description_fr, slug, cover_image_url, presentation_file_url,
               status, published, start_date, end_date, created_at, updated_at
-       FROM projects 
-       ORDER BY created_at DESC 
+       FROM projects
+       ORDER BY created_at DESC
        LIMIT $1 OFFSET $2`,
       [limit, offset]
     );
@@ -133,7 +133,7 @@ router.post('/',
       }
 
       let { title_fr, title_en, description_fr, description_en, content_fr, content_en,
-            slug, cover_image_url, status = 'active', start_date, end_date,
+            slug, cover_image_url, presentation_file_url, status = 'active', start_date, end_date,
             budget, location, partners, published = false, auto_translate = false } = req.body;
 
       // Auto-translate if requested
@@ -162,11 +162,11 @@ router.post('/',
       const result = await query(
         `INSERT INTO projects (
           title_fr, title_en, description_fr, description_en, content_fr, content_en,
-          slug, cover_image_url, status, start_date, end_date, budget, location, partners, published
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          slug, cover_image_url, presentation_file_url, status, start_date, end_date, budget, location, partners, published
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         RETURNING *`,
         [title_fr, title_en, description_fr, description_en, content_fr, content_en,
-         slug, cover_image_url, status, start_date, end_date, budget, location, partners, published]
+         slug, cover_image_url, presentation_file_url, status, start_date, end_date, budget, location, partners, published]
       );
 
       res.status(201).json({ project: result.rows[0] });
@@ -185,7 +185,7 @@ router.put('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     let { title_fr, title_en, description_fr, description_en, content_fr, content_en,
-          slug, cover_image_url, status, start_date, end_date, budget, location,
+          slug, cover_image_url, presentation_file_url, status, start_date, end_date, budget, location,
           partners, published, auto_translate = false } = req.body;
 
     // Auto-translate if requested
@@ -212,15 +212,15 @@ router.put('/:id', authenticate, async (req, res) => {
     }
 
     const result = await query(
-      `UPDATE projects SET 
+      `UPDATE projects SET
         title_fr = $2, title_en = $3, description_fr = $4, description_en = $5,
         content_fr = $6, content_en = $7, slug = $8, cover_image_url = $9,
-        status = $10, start_date = $11, end_date = $12, budget = $13,
-        location = $14, partners = $15, published = $16
-       WHERE id = $1 
+        presentation_file_url = $10, status = $11, start_date = $12, end_date = $13, budget = $14,
+        location = $15, partners = $16, published = $17
+       WHERE id = $1
        RETURNING *`,
       [id, title_fr, title_en, description_fr, description_en, content_fr, content_en,
-       slug, cover_image_url, status, start_date, end_date, budget, location, partners, published]
+       slug, cover_image_url, presentation_file_url, status, start_date, end_date, budget, location, partners, published]
     );
 
     if (result.rows.length === 0) {
