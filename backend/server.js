@@ -17,8 +17,8 @@ dotenv.config();
 
 const app = express();
 
-// ⚠️ CRITIQUE pour Render : PORT doit être 10000 ou process.env.PORT
-const PORT = process.env.PORT || 10000;
+// ⚠️ CRITIQUE pour Railway : PORT doit être process.env.PORT
+const PORT = process.env.PORT || 3000;
 
 // ============ CONFIGURATION CORS ROBUSTE ============
 const corsOptions = {
@@ -37,7 +37,7 @@ const corsOptions = {
       allowedOrigins.push(process.env.FRONTEND_URL);
     }
     
-    // 3. Logs de débogage (visibles dans Render logs)
+    // 3. Logs de débogage (visibles dans Railway logs)
     console.log('🔍 CORS Check:');
     console.log('   Origin:', origin);
     console.log('   FRONTEND_URL:', process.env.FRONTEND_URL || 'Non défini');
@@ -68,7 +68,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ============ ROUTES ============
 
-// Health check spécifique pour Render (nécessaire pour le free tier)
+// Health check pour Railway
 app.get('/health', (req, res) => {
   res.status(200).json({ 
     status: 'ok', 
@@ -85,7 +85,6 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/news', newsRoutes);
 app.use('/api/projects', projectsRoutes);
 app.use('/api/media', mediaRoutes);
-app.use('/api/fix', require('./routes/fix-projects.js'));
 app.use('/api/media-simple', mediaSimpleRoutes);
 
 // 404 handler
@@ -124,7 +123,7 @@ app.listen(PORT, () => {
   console.log(`📍 Port: ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔗 Frontend URL: ${process.env.FRONTEND_URL || 'Non configuré - utilise localhost:5173'}`);
-  console.log(`📡 URL Render: https://agadev-backend.onrender.com`);
+  console.log(`📡 URL Railway: https://agadev-backend-production.up.railway.app`);
   console.log('='.repeat(50));
   
   // Log supplémentaire pour vérifier les variables
